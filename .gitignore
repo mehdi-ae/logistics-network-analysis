@@ -1,0 +1,27 @@
+# Generated data files
+*.csv
+*.parquet
+*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+*.egg-info/
+.eggs/
+
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# BigQuery credentials
+*.json
+service_account*.json
+credentials*.json
