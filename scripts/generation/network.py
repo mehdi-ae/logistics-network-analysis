@@ -16,10 +16,16 @@ Data quality issues injected:
   - NULL latitude/longitude (~3% of rows)
   - Mixed case country codes (~5% of rows)
   - Extra whitespace in city names (~4% of rows)
-  - Invalid node_type in 1 row
+  - Extra duplicate row with invalid node_type appended
+    (original node row unchanged — Silver deduplication practice)
   - NULL delivery_node_capability in 1 delivery node row
   - Invalid delivery_node_capability value in 1 row
   - Duplicate row for 1 node
+
+All 51 clean nodes are preserved intact so downstream generation
+scripts can build the full network. Quality issues are additive
+(extra rows) or non-structural (field value issues that don't
+affect node identity or type).
 
 Output: data/mdm_network.csv
 """
@@ -91,15 +97,8 @@ NODES = [
     {"node_id": "DN_OSR", "node_type": "delivery_node",     "city": "Ostrava",    "country": "CZ", "latitude": 49.8209,  "longitude": 18.2625},
 ]
 
-# ── DELIVERY NODE CAPABILITY ASSIGNMENT ──────────────────────────────────────
 
 def assign_delivery_node_capabilities(nodes):
-    """
-    Assigns delivery_node_capability to each node.
-      origin_node:       ALL
-      consolidation_hub: ALL
-      delivery_node:     MTL (70%) or BOX (30%)
-    """
     delivery_nodes = [n for n in nodes if n["node_type"] == "delivery_node"]
     n_mtl          = round(len(delivery_nodes) * 0.70)
     shuffled       = delivery_nodes.copy()
@@ -117,31 +116,37 @@ def assign_delivery_node_capabilities(nodes):
     return result
 
 
-# ── DATA QUALITY INJECTION ────────────────────────────────────────────────────
-
 def inject_quality_issues(nodes):
     """
     Injects realistic data quality issues.
+
+    All 51 clean nodes are preserved intact — quality issues are
+    either additive (extra rows appended) or affect non-structural
+    fields only (country case, city whitespace, capability value).
+    This ensures downstream generation scripts see all 51 nodes.
 
     Issues:
       1. NULL latitude/longitude (~3% of rows)
       2. Mixed case country codes (~5% of rows)
       3. Extra whitespace in city names (~4% of rows)
-      4. Invalid node_type in 1 row
-      5. NULL delivery_node_capability in 1 delivery node row
+      4. Extra duplicate row with invalid node_type appended
+         (original node row unchanged)
+      5. NULL delivery_node_capability in 1 row
       6. Invalid delivery_node_capability value in 1 row
-      7. Duplicate row for 1 node
+      7. Standard exact duplicate row for 1 node
     """
     total  = len(nodes)
     result = [row.copy() for row in nodes]
     used   = []
 
-    # Issue 1: NULL lat/lon (~3%)
-    null_coord_count   = max(1, round(total * 0.03))
+# Issue 1: Extra rows with NULL lat/lon (~3% — additive, originals intact)
+    null_coord_count = max(1, round(total * 0.03))
     null_coord_indices = random.sample(range(total), null_coord_count)
     for i in null_coord_indices:
-        result[i]["latitude"]  = ""
-        result[i]["longitude"] = ""
+        bad_row = result[i].copy()
+        bad_row["latitude"]  = ""
+        bad_row["longitude"] = ""
+        result.append(bad_row)
     used.extend(null_coord_indices)
 
     # Issue 2: Mixed case country (~5%)
@@ -168,13 +173,14 @@ def inject_quality_issues(nodes):
             result[i]["city"] = city[:mid] + "  " + city[mid:]
     used.extend(ws_indices)
 
-    # Issue 4: Invalid node_type in 1 row
+    # Issue 4: Extra duplicate row with invalid node_type (additive)
     eligible = [i for i in range(total) if i not in used]
     idx4     = random.choice(eligible)
-    result[idx4]["node_type"] = "orign_node"
-    used.append(idx4)
+    bad_row  = result[idx4].copy()
+    bad_row["node_type"] = "orign_node"
+    result.append(bad_row)
 
-    # Issue 5: NULL delivery_node_capability in 1 delivery node row
+    # Issue 5: NULL delivery_node_capability in 1 row
     dn_indices = [
         i for i in range(total)
         if result[i]["node_type"] == "delivery_node" and i not in used
@@ -190,14 +196,12 @@ def inject_quality_issues(nodes):
     result[idx6]["delivery_node_capability"] = "BOTH"
     used.append(idx6)
 
-    # Issue 7: Exact duplicate row
+    # Issue 7: Standard exact duplicate row
     dup_idx = random.randint(0, total - 1)
     result.append(result[dup_idx].copy())
 
     return result
 
-
-# ── MAIN ──────────────────────────────────────────────────────────────────────
 
 def main():
     output_dir  = os.path.join(os.path.dirname(__file__), "..", "..", "data")
@@ -223,8 +227,8 @@ def main():
     mtl_count = sum(1 for n in dn_nodes if n["delivery_node_capability"] == "MTL")
     box_count = sum(1 for n in dn_nodes if n["delivery_node_capability"] == "BOX")
 
-    print(f"Nodes defined:              {clean}")
-    print(f"Rows written:               {total} (includes 1 duplicate)")
+    print(f"Nodes defined (clean):      {clean}")
+    print(f"Rows written:               {total} (clean + quality issue rows)")
     print(f"Output:                     {output_path}")
     print()
     print(f"Delivery node capability:")
@@ -235,10 +239,12 @@ def main():
     print(f"  NULL coordinates:         ~{max(1, round(clean*0.03))} rows")
     print(f"  Mixed case country:       ~{max(1, round(clean*0.05))} rows")
     print(f"  Whitespace in city:       ~{max(1, round(clean*0.04))} rows")
-    print(f"  Invalid node_type:        1 row")
+    print(f"  Invalid node_type row:    1 extra row appended (original intact)")
     print(f"  NULL capability:          1 row")
     print(f"  Invalid capability value: 1 row")
     print(f"  Duplicate row:            1 row")
+    print()
+    print("All 51 clean nodes preserved — no structural nodes corrupted.")
 
 
 if __name__ == "__main__":
