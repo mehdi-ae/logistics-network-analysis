@@ -5,53 +5,27 @@ Generates tms_transportation.csv — one row per truck run.
 
 Simulation period: July 1 – December 31 2025 (184 days)
 
-Columns:
-  truck_id, origin_node_id, destination_node_id, carrier,
-  departure_datetime, transit_time_hours, arrival_datetime,
-  container_count, package_count, cbm
+Changes from previous version:
+  - packages_per_cbm reduced to 3-5 (was 8-15) for BigQuery storage
+  - Fill rate driven by lane volume profile (heavy/medium/thin)
+  - Truck count per day driven by lane volume profile
+  - Thin lanes: 80% chance of running on any given day
 
-Container count distribution (per truck):
-  15% — 1  to 9  containers (light)
-  25% — 10 to 25 containers (mid)
-  50% — 26 to 29 containers (heavy)
-  10% — 30 to 32 containers (peak)
+Lane volume profiles:
+  Heavy  (25%) — 5-10 trucks/day, fill rate 0.75-1.00
+  Medium (50%) — 2-5  trucks/day, fill rate 0.45-0.74
+  Thin   (25%) — 0-1  trucks/day (80% run probability), fill rate 0.15-0.44
 
-Timing logic per lane type:
-
-  indirect_leg1 (origin -> consolidation hub):
-    Arrival generated first, target 06:00-20:59 (soft).
-    Departure back-calculated as arrival minus transit time.
-
-  indirect_leg2 (consolidation hub -> delivery node):
-    Hard departure window 22:00-05:00 spanning midnight.
-    25% depart 22:00-23:59 on sim_date.
-    75% depart 00:00-05:00 on sim_date+1.
-    Arrival forward-calculated as departure plus transit time.
-    Late arrivals emerge naturally from transit variance.
-
-  direct (origin -> delivery node):
-    Explicit 90/10 SLA split on arrival.
-    90% arrive 06:00-09:59 (on time).
-    10% arrive 10:00-14:00 (late).
-    Departure back-calculated as arrival minus transit time.
-
-Seasonality multipliers (applied to daily truck count per lane):
+Seasonality (applied to fill rate, capped at 1.0):
   July-August:    0.85
   September-Oct:  1.00
-  November:       1.20
-  December:       1.40
+  November:       1.15
+  December:       1.30
 
-Carrier assignment:
-  Each active lane gets a fixed set of 2-3 carriers drawn at network
-  build time. Per truck run, carrier is drawn randomly from that set.
-  Guarantees same-lane carrier overlap for benchmarking.
-
-Data quality issues injected:
-  - Negative transit time in 1 row
-  - Arrival before departure in 1 row
-  - NULL carrier in ~1% of rows
-  - CBM exceeding container capacity in ~0.5% of rows
-  - Truck ID with wrong format in 1 row
+Timing:
+  indirect_leg1: arrival-first, target 06:00-20:59
+  indirect_leg2: departure-first, hard window 22:00-05:00
+  direct:        arrival-first, explicit 90/10 SLA split
 
 Output: data/tms_transportation.csv
 """
@@ -85,8 +59,8 @@ SEASONALITY = {
     8:  0.85,
     9:  1.00,
     10: 1.00,
-    11: 1.20,
-    12: 1.40,
+    11: 1.15,
+    12: 1.30,
 }
 
 CONTAINER_BANDS = [
@@ -101,8 +75,8 @@ CONTAINER_BANDS = [
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi    = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
+    dphi       = math.radians(lat2 - lat1)
+    dlambda    = math.radians(lon2 - lon1)
     a = (math.sin(dphi/2)**2
          + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2)
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
@@ -113,12 +87,6 @@ def expected_transit_hours(distance_km):
 
 
 def actual_transit_hours(expected_h):
-    """
-    Right-skewed variance:
-      70% — +0.0 to +0.5h
-      20% — +0.5 to +1.5h
-      10% — +1.5 to +3.0h
-    """
     r = random.random()
     if r < 0.70:
         variance = random.uniform(0.0, 0.5)
@@ -139,20 +107,14 @@ def draw_container_count():
     return random.randint(26, 29)
 
 
-def draw_cbm(container_count):
-    fill_rate = random.uniform(0.60, 1.00)
+def draw_cbm(container_count, fill_min, fill_max):
+    fill_rate = min(random.uniform(fill_min, fill_max), 1.0)
     return round(container_count * fill_rate, 2)
 
 
 def draw_package_count(cbm):
-    packages_per_cbm = random.uniform(8, 15)
+    packages_per_cbm = random.uniform(3, 5)
     return max(1, round(cbm * packages_per_cbm))
-
-
-def daily_truck_count(month):
-    multiplier   = SEASONALITY.get(month, 1.0)
-    adjusted_max = max(1, round(10 * multiplier))
-    return random.randint(1, min(adjusted_max, 10))
 
 
 def load_node_lookup(network):
@@ -165,27 +127,14 @@ def load_node_lookup(network):
 # ── TIMING FUNCTIONS ─────────────────────────────────────────────────────────
 
 def timing_direct(sim_date, transit_h):
-    """
-    Direct lane: arrival-first with explicit 90/10 SLA.
-    90% arrive 06:00-09:59, 10% arrive 10:00-14:00.
-    Departure = arrival - transit.
-    """
     minute = random.randint(0, 59)
-    if random.random() < 0.90:
-        hour = random.randint(6, 9)
-    else:
-        hour = random.randint(10, 14)
+    hour   = random.randint(6, 9) if random.random() < 0.90 else random.randint(10, 14)
     arrival_dt   = datetime(sim_date.year, sim_date.month, sim_date.day, hour, minute)
     departure_dt = arrival_dt - timedelta(hours=transit_h)
     return departure_dt, arrival_dt
 
 
 def timing_leg1(sim_date, transit_h):
-    """
-    Origin -> consolidation hub: arrival-first.
-    Target arrival 06:00-20:59 (soft constraint).
-    Departure = arrival - transit.
-    """
     hour         = random.randint(6, 20)
     minute       = random.randint(0, 59)
     arrival_dt   = datetime(sim_date.year, sim_date.month, sim_date.day, hour, minute)
@@ -194,13 +143,6 @@ def timing_leg1(sim_date, transit_h):
 
 
 def timing_leg2(sim_date, transit_h):
-    """
-    Consolidation hub -> delivery node: departure-first.
-    Hard departure window 22:00-05:00 spanning midnight.
-      25% depart 22:00-23:59 on sim_date
-      75% depart 00:00-05:00 on sim_date+1
-    Arrival = departure + transit.
-    """
     minute = random.randint(0, 59)
     if random.random() < 0.25:
         hour         = random.randint(22, 23)
@@ -213,13 +155,24 @@ def timing_leg2(sim_date, transit_h):
     return departure_dt, arrival_dt
 
 
+# ── LANE TRUCK COUNT ──────────────────────────────────────────────────────────
+
+def daily_truck_count(profile, month):
+    multiplier = SEASONALITY.get(month, 1.0)
+    if profile["profile"] == "thin":
+        if random.random() > profile["thin_prob"]:
+            return 0
+        return 1
+    adjusted_max = min(
+        max(profile["truck_min"], round(profile["truck_max"] * multiplier)),
+        profile["truck_max"]
+    )
+    return random.randint(profile["truck_min"], adjusted_max)
+
+
 # ── CARRIER ASSIGNMENT ────────────────────────────────────────────────────────
 
 def build_lane_carrier_map(all_lanes):
-    """
-    Assigns a fixed set of 2-3 carriers to each active lane.
-    Same carrier set applies for all simulation days.
-    """
     lane_carriers = {}
     for lane in all_lanes:
         if not lane["is_active"]:
@@ -236,6 +189,7 @@ def build_lane_carrier_map(all_lanes):
 def generate_transportation(network, lane_carriers, node_lookup):
     rows          = []
     truck_counter = 1
+    profiles      = network["lane_volume_profiles"]
 
     current_date = SIM_START
     while current_date <= SIM_END:
@@ -248,10 +202,20 @@ def generate_transportation(network, lane_carriers, node_lookup):
             origin_id = lane["origin_id"]
             dest_id   = lane["destination_id"]
             lane_type = lane["lane_type"]
+            lane_key  = (origin_id, dest_id)
 
             origin_node = node_lookup.get(origin_id)
             dest_node   = node_lookup.get(dest_id)
             if not origin_node or not dest_node:
+                continue
+
+            profile = profiles.get(lane_key, {
+                "profile": "medium", "fill_min": 0.45, "fill_max": 0.74,
+                "truck_min": 2, "truck_max": 5, "thin_prob": 1.0
+            })
+
+            n_trucks = daily_truck_count(profile, month)
+            if n_trucks == 0:
                 continue
 
             distance_km = haversine_km(
@@ -259,9 +223,11 @@ def generate_transportation(network, lane_carriers, node_lookup):
                 dest_node["latitude"],   dest_node["longitude"]
             )
             expected_h = expected_transit_hours(distance_km)
-            n_trucks   = daily_truck_count(month)
-            lane_key   = (origin_id, dest_id)
             carriers   = lane_carriers.get(lane_key, ["EuroHaul", "TransCargo"])
+
+            multiplier = SEASONALITY.get(month, 1.0)
+            fill_min   = max(min(profile["fill_min"] * multiplier, 1.0), 0.10)
+            fill_max   = min(profile["fill_max"] * multiplier, 1.0)
 
             for _ in range(n_trucks):
                 transit_h = actual_transit_hours(expected_h)
@@ -274,7 +240,7 @@ def generate_transportation(network, lane_carriers, node_lookup):
                     departure_dt, arrival_dt = timing_direct(current_date, transit_h)
 
                 container_count = draw_container_count()
-                cbm             = draw_cbm(container_count)
+                cbm             = draw_cbm(container_count, fill_min, fill_max)
                 package_count   = draw_package_count(cbm)
                 carrier         = random.choice(carriers)
                 truck_id        = f"TRK_{truck_counter:07d}"
@@ -305,33 +271,28 @@ def inject_quality_issues(rows):
     total  = len(result)
     used   = set()
 
-    # Issue 1: Negative transit time
     idx1 = random.randint(0, total - 1)
     result[idx1]["transit_time_hours"] = -abs(result[idx1]["transit_time_hours"])
     used.add(idx1)
 
-    # Issue 2: Arrival before departure
-    idx2 = random.choice([i for i in range(total) if i not in used])
+    idx2   = random.choice([i for i in range(total) if i not in used])
     dep_dt = datetime.strptime(result[idx2]["departure_datetime"], "%Y-%m-%d %H:%M:%S")
     result[idx2]["arrival_datetime"]   = result[idx2]["departure_datetime"]
     result[idx2]["departure_datetime"] = (dep_dt + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
     used.add(idx2)
 
-    # Issue 3: NULL carrier ~1%
     null_count   = max(1, round(total * 0.01))
     null_indices = random.sample([i for i in range(total) if i not in used], null_count)
     for i in null_indices:
         result[i]["carrier"] = ""
     used.update(null_indices)
 
-    # Issue 4: CBM over capacity ~0.5%
     cbm_count   = max(1, round(total * 0.005))
     cbm_indices = random.sample([i for i in range(total) if i not in used], cbm_count)
     for i in cbm_indices:
         result[i]["cbm"] = result[i]["container_count"] + round(random.uniform(0.5, 3.0), 2)
     used.update(cbm_indices)
 
-    # Issue 5: Wrong truck ID format
     idx5 = random.choice([i for i in range(total) if i not in used])
     result[idx5]["truck_id"] = result[idx5]["truck_id"].replace("TRK_", "TRUCK-")
 
@@ -382,72 +343,53 @@ def main():
     print(f"  Output:             {output_path}")
     print()
 
-    # Container distribution
-    bands = {
-        "light  (1-9)":   0,
-        "mid    (10-25)": 0,
-        "heavy  (26-29)": 0,
-        "peak   (30-32)": 0,
-    }
+    bands = {"light  (1-9)": 0, "mid    (10-25)": 0, "heavy  (26-29)": 0, "peak   (30-32)": 0}
     for row in rows:
         c = row["container_count"]
-        if c <= 9:
-            bands["light  (1-9)"] += 1
-        elif c <= 25:
-            bands["mid    (10-25)"] += 1
-        elif c <= 29:
-            bands["heavy  (26-29)"] += 1
-        else:
-            bands["peak   (30-32)"] += 1
+        if c <= 9:        bands["light  (1-9)"]   += 1
+        elif c <= 25:     bands["mid    (10-25)"]  += 1
+        elif c <= 29:     bands["heavy  (26-29)"]  += 1
+        else:             bands["peak   (30-32)"]  += 1
     print("Container distribution (clean data):")
     for band, count in bands.items():
         pct = count / len(rows) * 100
         print(f"  {band}  {count:>8,}  ({pct:.1f}%)")
     print()
 
-    # SLA — direct lanes
-    direct_rows  = [
-        r for r in rows
-        if r["origin_node_id"].startswith("ON_")
-        and r["destination_node_id"].startswith("DN_")
-    ]
-    on_time_d    = sum(
-        1 for r in direct_rows
-        if datetime.strptime(r["arrival_datetime"], "%Y-%m-%d %H:%M:%S").hour < 10
-    )
-    total_direct = len(direct_rows)
-    if total_direct:
-        print(f"Direct lane SLA (arrival before 10:00):")
-        print(f"  On time:  {on_time_d:,} / {total_direct:,}  ({on_time_d/total_direct*100:.1f}%)")
-        print(f"  Late:     {total_direct-on_time_d:,}  ({(total_direct-on_time_d)/total_direct*100:.1f}%)")
+    profiles = network["lane_volume_profiles"]
+    cbm_by_profile = {"heavy": [], "medium": [], "thin": []}
+    for row in rows:
+        key = (row["origin_node_id"], row["destination_node_id"])
+        p   = profiles.get(key, {}).get("profile", "medium")
+        cbm_by_profile[p].append(row["cbm"] / row["container_count"])
+    print("Average fill rate by lane profile (clean data):")
+    for p, rates in cbm_by_profile.items():
+        if rates:
+            print(f"  {p:<8}  avg fill rate: {sum(rates)/len(rates):.2f}")
     print()
 
-    # SLA — indirect leg2
-    leg2_rows  = [
-        r for r in rows
-        if r["origin_node_id"].startswith("CH_")
-        and r["destination_node_id"].startswith("DN_")
-    ]
-    on_time_l2 = sum(
-        1 for r in leg2_rows
-        if datetime.strptime(r["arrival_datetime"], "%Y-%m-%d %H:%M:%S").hour < 10
-    )
-    total_leg2 = len(leg2_rows)
-    if total_leg2:
-        print(f"Indirect leg2 SLA (arrival before 10:00):")
-        print(f"  On time:  {on_time_l2:,} / {total_leg2:,}  ({on_time_l2/total_leg2*100:.1f}%)")
-        print(f"  Late:     {total_leg2-on_time_l2:,}  ({(total_leg2-on_time_l2)/total_leg2*100:.1f}%)")
+    direct_rows = [r for r in rows
+                   if r["origin_node_id"].startswith("ON_")
+                   and r["destination_node_id"].startswith("DN_")]
+    on_time_d   = sum(1 for r in direct_rows
+                      if datetime.strptime(r["arrival_datetime"], "%Y-%m-%d %H:%M:%S").hour < 10)
+    if direct_rows:
+        print(f"Direct lane SLA (before 10:00):")
+        print(f"  On time: {on_time_d:,} / {len(direct_rows):,}  ({on_time_d/len(direct_rows)*100:.1f}%)")
     print()
 
-    # Hub departure window check
-    hub_departs = leg2_rows
-    in_window   = sum(
-        1 for r in hub_departs
-        if datetime.strptime(r["departure_datetime"], "%Y-%m-%d %H:%M:%S").hour >= 22
-        or datetime.strptime(r["departure_datetime"], "%Y-%m-%d %H:%M:%S").hour <= 5
-    )
-    print(f"Hub departure window check (22:00-05:00):")
-    print(f"  In window: {in_window:,} / {len(hub_departs):,}  ({in_window/len(hub_departs)*100:.1f}%)")
+    leg2_rows  = [r for r in rows
+                  if r["origin_node_id"].startswith("CH_")
+                  and r["destination_node_id"].startswith("DN_")]
+    on_time_l2 = sum(1 for r in leg2_rows
+                     if datetime.strptime(r["arrival_datetime"], "%Y-%m-%d %H:%M:%S").hour < 10)
+    in_window  = sum(1 for r in leg2_rows
+                     if datetime.strptime(r["departure_datetime"], "%Y-%m-%d %H:%M:%S").hour >= 22
+                     or datetime.strptime(r["departure_datetime"], "%Y-%m-%d %H:%M:%S").hour <= 5)
+    if leg2_rows:
+        print(f"Indirect leg2 SLA (before 10:00):")
+        print(f"  On time:   {on_time_l2:,} / {len(leg2_rows):,}  ({on_time_l2/len(leg2_rows)*100:.1f}%)")
+        print(f"  Hub depart window check: {in_window:,} / {len(leg2_rows):,}  ({in_window/len(leg2_rows)*100:.1f}%)")
     print()
 
     print("Quality issues injected:")
