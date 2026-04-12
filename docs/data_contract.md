@@ -49,6 +49,13 @@ All Silver layer tables conform to the following standards before being made ava
 | null_in_source | Value was NULL or empty in the source data |
 | null_expected | NULL is a valid state for this field |
 | invalid_value | Value is present but fails validation — kept as-is |
+| invalid_format | Value does not conform to the expected format |
+| invalid_country | Country code is valid format but not in the expected set for this network |
+| not_iso_format | Country code does not conform to 2-character ISO standard |
+| unexpected_node_format | node_id does not match the expected pattern (ON|CH|DN)_[A-Z]{2,4} |
+| invalid_node_type | Node exists in the network but is not the expected type for this table |
+| out_of_range | Value is present and valid type but outside the expected business range |
+| invalid_cost | Cost value is zero or negative |
 | referential_integrity_fail | Foreign key lookup found no matching record |
 | duplicate | Row is a duplicate of another row in the same table |
 
@@ -85,7 +92,17 @@ Gold layer transformations filter on `record_quality != 'critical'` by default. 
 | delivery_node_capability | STRING | Conditional | MTL \| BOX \| ALL. NULL or invalid = warning |
 | record_quality | STRING | No | clean \| warning \| critical |
 
-**Critical conditions:** NULL or invalid `node_type`, NULL `latitude` or `longitude`. These rows cannot be used for network routing or distance calculations.
+**Critical conditions:** NULL or invalid `node_type`, NULL `latitude` or `longitude`, 
+`latitude` outside 35–72, `longitude` outside -10–40, `node_id` not matching 
+pattern `^(ON|CH|DN)_[A-Z]{2,4}$`.
+
+**Validation rules:**
+- `node_id` must match `^(ON|CH|DN)_[A-Z]{2,4}$`
+- `country` must be exactly 2 characters and uppercase
+- `latitude` must be between 35 and 72
+- `longitude` must be between -10 and 40
+- `city` empty string after trim is treated as null_in_source
+- `delivery_node_capability` must be one of MTL, BOX, ALL
 
 ---
 
@@ -103,7 +120,14 @@ Gold layer transformations filter on `record_quality != 'critical'` by default. 
 | cost_per_km_eur | FLOAT | Conditional | Variable cost per km in EUR. NULL = critical |
 | record_quality | STRING | No | clean \| warning \| critical |
 
-**Critical conditions:** negative `fixed_cost_eur`, NULL `cost_per_km_eur`. These rows cannot be used for lane cost calculations.
+**Critical conditions:** negative `fixed_cost_eur`, NULL `cost_per_km_eur`. 
+These rows cannot be used for lane cost calculations.
+
+**Validation rules:**
+- `country` must be exactly 2 characters and one of: FR, DE, ES, IT, NL, BE, PL, CZ
+- `carrier` leading and trailing whitespace is corrected in Silver
+- `fixed_cost_eur` must be greater than 0
+- `cost_per_km_eur` must be greater than 0
 
 ---
 
@@ -120,7 +144,14 @@ Gold layer transformations filter on `record_quality != 'critical'` by default. 
 | cost_per_package_eur | FLOAT | Conditional | Handling cost per package. Expected range €1.00–€2.50. NULL = critical |
 | record_quality | STRING | No | clean \| warning \| critical |
 
-**Critical conditions:** NULL `cost_per_package_eur`. Rows with values outside the expected range are flagged as warning — kept but flagged for review.
+**Critical conditions:** NULL `cost_per_package_eur`, `node_id` not referencing 
+a consolidation_hub in silver_mdm_network.
+
+**Validation rules:**
+- `node_id` must reference a node of type consolidation_hub in silver_mdm_network
+- `cost_per_package_eur` expected range €1.00–€2.50
+- Values outside the expected range are flagged as out_of_range and treated as critical
+- Values zero or negative are flagged as invalid_cost and treated as critical
 
 ---
 

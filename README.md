@@ -6,7 +6,7 @@ A production-grade logistics analytics warehouse built on a synthetic EU network
 
 **Lane Health Dashboard** — monitors lane volume and utilization to identify unprofitable lanes and trigger network optimization decisions before costs compound.
 
-**Container Utilization Compliance** — tracks container type compliance per node and lane to anticipate procurement shortages, reduce unnecessary packaging costs, and hold sites accountable for compliance gaps.
+**Container Utilization Compliance** — tracks container type compliance per node and lane to anticipate procurement shortages, reduce unnecessary costs, and hold sites accountable for compliance gaps.
 
 **Transit Time Governance** — compares configured transit times against measured p95 actuals to protect customer delivery promises, flag misconfigured lanes, and surface underperforming carriers before they impact experience.
 
