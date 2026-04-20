@@ -142,3 +142,19 @@ The correct approach is additive injection: the clean row remains intact and a d
 **Decision:** When the Silver layer encounters data that is not covered by the data contract, the correct response is to flag it as `invalid_value`, update the contract, and document the decision. Silent corrections applied without updating the contract are not acceptable.
 
 **Reasoning:** A silent fix creates hidden knowledge — the Silver layer knows something that the contract does not document, which means any consumer reading the contract has an incomplete picture of the data. In a team environment this creates bugs, misaligned expectations, and untraceable decisions. The contract is the source of truth; if reality diverges from it, the contract is updated first.
+
+---
+
+## ADR-013 — Container count coherence check removed from Silver
+
+**Date:** April 2026
+**Status:** Decided
+
+Decision: The container count coherence check was removed from silver_wms_shipment_details. The check compared COUNT(DISTINCT container_id) per truck in the shipment details against container_count in tms_transportation.
+
+Reasoning: Diagnostic queries revealed that valid container count in shipment  details is consistently lower than container_count in transportation for some  trucks. Investigation confirmed the generation script does not guarantee that every container on a truck has at least one shipment — package_count can be less than container_count. This makes the coherence check unreliable at Silver layer.
+
+The invalid_container flag (wrong prefix format) already catches container ID  corruption. The container count coherence check belongs in a Gold reconciliation 
+model where container and shipment counts can be compared after all quality issues are resolved.
+
+Action required: Update generate_shipment_details.py to enforce package_count >= container_count before the next data refresh.
