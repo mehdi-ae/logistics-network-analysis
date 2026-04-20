@@ -200,6 +200,12 @@ a consolidation_hub in silver_mdm_network.
 
 **Critical conditions:** NULL `sort_code`, referential integrity failure on any node ID or `truck_id`, `container_id` with invalid format.
 
+**Known limitation:** container count coherence (C_count in shipment details = 
+container_count in transportation) is not validated in Silver. The generation 
+layer does not guarantee every container carries at least one package. This 
+constraint will be validated in Gold after the generation script is corrected. 
+See ADR-014.
+
 ---
 
 ## Coherence Guarantees
