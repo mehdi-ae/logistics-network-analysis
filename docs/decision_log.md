@@ -158,3 +158,54 @@ The invalid_container flag (wrong prefix format) already catches container ID  c
 model where container and shipment counts can be compared after all quality issues are resolved.
 
 Action required: Update generate_shipment_details.py to enforce package_count >= container_count before the next data refresh.
+
+---
+
+## ADR-014 — Triplet type classification uses origin node type, not destination equals sort_code alone
+
+**Date:** April 2026
+**Status:** Decided
+
+**Decision:** The `triplet_type` classification in `gold_fact_lane_simulation` uses `origin_node_id LIKE 'ON_%' AND destination_node_id = sort_code` to identify direct lanes, not destination equals sort_code alone.
+
+**Reasoning:** A leg2 truck run (consolidation hub → delivery node) also has destination_node_id = sort_code, since it is delivering directly to the final node. Using destination equals sort_code alone classified all leg2 rows as direct lanes, inflating direct lane CBM to over 59,000 monthly CBM per lane. Adding the origin node type check correctly distinguishes true direct lanes (ON_ origin) from indirect leg2 rows (CH_ origin). Leg2 rows are filtered out of the simulation entirely in `triplets_distance_one` using `WHERE d.origin_node_type = 'origin_node'`, since they are not actionable at origin-decision level.
+
+---
+
+## ADR-015 — NULL carrier truck runs preserved as UNKNOWN with imputed cost
+
+**Date:** April 2026
+**Status:** Decided
+
+**Decision:** NULL carrier truck runs (~1% of TMS data, classified as warning in Silver) are preserved in `gold_fact_lane_daily` as carrier = 'UNKNOWN' with an imputed cost based on the country-level average carrier rate. UNKNOWN carrier rows are added via UNION ALL in the date spine CTE, bypassing gap-filling to avoid generating zero-volume slots for non-existent carrier combinations.
+
+**Reasoning:** Excluding NULL carrier rows would undercount volume on affected lanes. A lane that appears thin only because 1% of its truck runs were excluded might actually have enough volume to be classified as healthy. Volume metrics (CBM, packages, truck count) are fully accurate for UNKNOWN rows. The imputed cost is flagged via `cost_is_imputed = TRUE` so downstream consumers can distinguish estimated from actual cost figures.
+
+**Known limitation:** UNKNOWN carrier cost figures are estimates based on country averages and may not reflect the actual carrier that operated those runs.
+
+---
+
+## ADR-016 — CBM pro-rating for indirect lane simulation
+
+**Date:** April 2026
+**Status:** Decided
+
+**Decision:** For indirect lanes in `gold_fact_lane_simulation`, the CBM attributed to each (origin, hub, delivery node) triple is calculated as `(origin packages on this triple / total packages on hub→DN lane) × total hub→DN CBM`, not the raw sum of triplet-level CBM from the WMS join.
+
+**Reasoning:** A hub→delivery node truck carries packages from multiple origin nodes consolidated at the hub. Summing the pro-rated CBM from the WMS join at triplet level aggregates to the full hub→DN lane CBM rather than the origin's share. This inflated indirect lane CBM to over 59,000 monthly for some lanes. The pro-rating correctly allocates each origin's proportional share of the shared hub→DN volume, producing a defensible and operationally meaningful CBM figure for simulation purposes.
+
+---
+
+## ADR-017 — Lane category thresholds set at data distribution percentiles
+
+**Date:** April 2026
+**Status:** Decided
+
+**Decision:** Lane category thresholds for `gold_fact_lane_simulation` are set at the p10/p90 of the observed monthly adjusted CBM distribution per lane type:
+
+- **Thin direct:** `adjusted_triplet_cbm < 138` monthly CBM (p10 of direct lane distribution = 4.6 CBM/day)
+- **Thick indirect:** `adjusted_triplet_cbm > 322` monthly CBM (p90 of indirect lane distribution = 10.7 CBM/day)
+
+**Reasoning:** The original operational thresholds (thin < 12 CBM/day, thick > 25 CBM/day) did not produce any thick lanes given the generated network's volume distribution. Direct lanes average 1,643 monthly CBM and indirect adjusted CBM averages 143 monthly CBM — both far from the original thresholds. Percentile-based thresholds produce a meaningful classification (approximately 10% thin, 10% thick, 80% healthy) while remaining operationally interpretable. Thin lanes at 4.6 CBM/day are running trucks at very low fill, and thick indirect triples at 10.7 CBM/day represent enough dedicated volume to justify evaluating a direct connection.
+
+**Note:** These thresholds are specific to this synthetic network and should be recalibrated against actual network data in a production deployment.
