@@ -51,7 +51,7 @@ Static reference tables are full-refreshed on every load. Transactional tables a
 | country | STRING | Country code |
 | latitude | STRING | Geographic latitude |
 | longitude | STRING | Geographic longitude |
-| delivery_node_capability | STRING | Container capability |
+| node_capability | STRING | Container capability |
 
 ---
 
@@ -137,8 +137,7 @@ Quality issues were intentionally injected across all five source files to force
 | Mixed case country | ~5% of rows | Country codes in lowercase instead of uppercase |
 | Whitespace in city | ~4% of rows | Leading, trailing, or double internal spaces |
 | Invalid node_type | 1 row | Typo: "orign_node" instead of "origin_node" |
-| NULL delivery_node_capability | 1 row | Missing capability value |
-| Invalid delivery_node_capability | 1 row | Value "BOTH" — not in the valid set MTL/BOX/ALL |
+
 
 ### fin_transport_rates
 

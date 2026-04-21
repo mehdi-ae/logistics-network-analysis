@@ -65,6 +65,11 @@ TABLES = [
         "wms_shipment_details",
         "Shipment legs — one row per shipment per leg",
     ),
+        (
+        "fin_procurement.csv",
+        "fin_procurement",
+        "Procurement items — one row per item",
+    ),
 ]
 
 

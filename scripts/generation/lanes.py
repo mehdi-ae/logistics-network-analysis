@@ -8,7 +8,7 @@ Builds the complete network connectivity map including:
   - Lane volume profiles (heavy/medium/thin)
   - Origin container type tiers (controls direct lane container correctness)
   - Hub container type tiers (controls leg2 lane container correctness)
-  - Delivery node capability map (MTL/BOX/ALL)
+  - Node capability map (MTL/BOX/ALL)
   - 10% deactivation on same-country lanes only
 
 Lane volume profiles:
@@ -83,7 +83,7 @@ def load_network(csv_path):
                 continue
 
             country = row["country"].strip().upper()
-            cap     = row.get("delivery_node_capability", "").strip().upper()
+            cap     = row.get("node_capability", "").strip().upper()
             if cap not in valid_caps:
                 cap = "ALL"
 

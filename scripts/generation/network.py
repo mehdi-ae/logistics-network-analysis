@@ -4,28 +4,22 @@ generate_network.py
 Generates mdm_network.csv — all 51 nodes.
 
 Columns:
-  node_id, node_type, city, country, latitude, longitude,
-  delivery_node_capability
+  node_id, node_type, city, country, latitude, longitude, node_capability
 
-delivery_node_capability:
+node_capability:
   delivery_node     — MTL (70%) or BOX (30%)
   origin_node       — ALL
-  consolidation_hub — ALL
+  consolidation_hub — MTL
 
 Data quality issues injected:
   - NULL latitude/longitude (~3% of rows)
   - Mixed case country codes (~5% of rows)
   - Extra whitespace in city names (~4% of rows)
-  - Extra duplicate row with invalid node_type appended
-    (original node row unchanged — Silver deduplication practice)
-  - NULL delivery_node_capability in 1 delivery node row
-  - Invalid delivery_node_capability value in 1 row
+  - Extra duplicate row with invalid node_type appended (original node row unchanged — Silver deduplication practice)
   - Duplicate row for 1 node
 
-All 51 clean nodes are preserved intact so downstream generation
-scripts can build the full network. Quality issues are additive
-(extra rows) or non-structural (field value issues that don't
-affect node identity or type).
+All 51 clean nodes are preserved intact so downstream generation scripts can build the full network. Quality issues are additive
+(extra rows) or non-structural (field value issues that don't affect node identity or type).
 
 Output: data/mdm_network.csv
 """
@@ -98,7 +92,7 @@ NODES = [
 ]
 
 
-def assign_delivery_node_capabilities(nodes):
+def assign_node_capabilities(nodes):
     delivery_nodes = [n for n in nodes if n["node_type"] == "delivery_node"]
     n_mtl          = round(len(delivery_nodes) * 0.70)
     shuffled       = delivery_nodes.copy()
@@ -109,9 +103,11 @@ def assign_delivery_node_capabilities(nodes):
     for node in nodes:
         n = node.copy()
         if n["node_type"] == "delivery_node":
-            n["delivery_node_capability"] = "MTL" if n["node_id"] in mtl_ids else "BOX"
-        else:
-            n["delivery_node_capability"] = "ALL"
+            n["node_capability"] = "MTL" if n["node_id"] in mtl_ids else "BOX"
+        elif n["node_type"] == "consolidation_hub":
+            n["node_capability"] = "MTL"
+        else: 
+            n["node_capability"] = "ALL"
         result.append(n)
     return result
 
@@ -120,20 +116,15 @@ def inject_quality_issues(nodes):
     """
     Injects realistic data quality issues.
 
-    All 51 clean nodes are preserved intact — quality issues are
-    either additive (extra rows appended) or affect non-structural
-    fields only (country case, city whitespace, capability value).
+    All 51 clean nodes are preserved intact — quality issues are either additive (extra rows appended) or affect non-structural fields only (country case, city whitespace, capability value).
     This ensures downstream generation scripts see all 51 nodes.
 
     Issues:
       1. NULL latitude/longitude (~3% of rows)
       2. Mixed case country codes (~5% of rows)
       3. Extra whitespace in city names (~4% of rows)
-      4. Extra duplicate row with invalid node_type appended
-         (original node row unchanged)
-      5. NULL delivery_node_capability in 1 row
-      6. Invalid delivery_node_capability value in 1 row
-      7. Standard exact duplicate row for 1 node
+      4. Extra duplicate row with invalid node_type appended (original node row unchanged)
+      5. Standard exact duplicate row for 1 node
     """
     total  = len(nodes)
     result = [row.copy() for row in nodes]
@@ -180,23 +171,7 @@ def inject_quality_issues(nodes):
     bad_row["node_type"] = "orign_node"
     result.append(bad_row)
 
-    # Issue 5: NULL delivery_node_capability in 1 row
-    dn_indices = [
-        i for i in range(total)
-        if result[i]["node_type"] == "delivery_node" and i not in used
-    ]
-    if dn_indices:
-        idx5 = random.choice(dn_indices)
-        result[idx5]["delivery_node_capability"] = ""
-        used.append(idx5)
-
-    # Issue 6: Invalid delivery_node_capability value in 1 row
-    eligible = [i for i in range(total) if i not in used]
-    idx6     = random.choice(eligible)
-    result[idx6]["delivery_node_capability"] = "BOTH"
-    used.append(idx6)
-
-    # Issue 7: Standard exact duplicate row
+    # Issue 5: Standard exact duplicate row
     dup_idx = random.randint(0, total - 1)
     result.append(result[dup_idx].copy())
 
@@ -208,12 +183,12 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "mdm_network.csv")
 
-    nodes_with_capability = assign_delivery_node_capabilities(NODES)
+    nodes_with_capability = assign_node_capabilities(NODES)
     nodes_with_issues     = inject_quality_issues(nodes_with_capability)
 
     fieldnames = [
         "node_id", "node_type", "city", "country",
-        "latitude", "longitude", "delivery_node_capability",
+        "latitude", "longitude", "node_capability",
     ]
 
     with open(output_path, "w", newline="", encoding="utf-8") as f:
@@ -224,14 +199,14 @@ def main():
     clean     = len(NODES)
     total     = len(nodes_with_issues)
     dn_nodes  = [n for n in nodes_with_capability if n["node_type"] == "delivery_node"]
-    mtl_count = sum(1 for n in dn_nodes if n["delivery_node_capability"] == "MTL")
-    box_count = sum(1 for n in dn_nodes if n["delivery_node_capability"] == "BOX")
+    mtl_count = sum(1 for n in dn_nodes if n["node_capability"] == "MTL")
+    box_count = sum(1 for n in dn_nodes if n["node_capability"] == "BOX")
 
     print(f"Nodes defined (clean):      {clean}")
     print(f"Rows written:               {total} (clean + quality issue rows)")
     print(f"Output:                     {output_path}")
     print()
-    print(f"Delivery node capability:")
+    print(f"Node capability:")
     print(f"  MTL-capable:              {mtl_count} ({mtl_count/len(dn_nodes)*100:.0f}%)")
     print(f"  BOX-only:                 {box_count} ({box_count/len(dn_nodes)*100:.0f}%)")
     print()
@@ -240,8 +215,6 @@ def main():
     print(f"  Mixed case country:       ~{max(1, round(clean*0.05))} rows")
     print(f"  Whitespace in city:       ~{max(1, round(clean*0.04))} rows")
     print(f"  Invalid node_type row:    1 extra row appended (original intact)")
-    print(f"  NULL capability:          1 row")
-    print(f"  Invalid capability value: 1 row")
     print(f"  Duplicate row:            1 row")
     print()
     print("All 51 clean nodes preserved — no structural nodes corrupted.")
