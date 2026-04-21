@@ -2,11 +2,9 @@
 
 **Version:** 1.1  
 **Status:** Active  
-**Effective date:** July 2025  
 **Last reviewed:** April 2026  
 **Data producer:** Analytics Engineering  
 **Data consumers:** BI / Dashboard layer, Gold layer transformations  
-**Owner:** El Mehdi Charaf
 
 ---
 
@@ -89,7 +87,7 @@ Gold layer transformations filter on `record_quality != 'critical'` by default. 
 | country | STRING | No | ISO 3166-1 alpha-2, uppercase |
 | latitude | FLOAT | Conditional | Geographic latitude. NULL = critical |
 | longitude | FLOAT | Conditional | Geographic longitude. NULL = critical |
-| delivery_node_capability | STRING | Conditional | MTL \| BOX \| ALL. NULL or invalid = warning |
+| node_capability | STRING | Conditional | MTL \| BOX \| ALL. NULL or invalid = warning |
 | record_quality | STRING | No | clean \| warning \| critical |
 
 **Critical conditions:** NULL or invalid `node_type`, NULL `latitude` or `longitude`, 
@@ -102,7 +100,7 @@ pattern `^(ON|CH|DN)_[A-Z]{2,4}$`.
 - `latitude` must be between 35 and 72
 - `longitude` must be between -10 and 40
 - `city` empty string after trim is treated as null_in_source
-- `delivery_node_capability` must be one of MTL, BOX, ALL
+- `node_capability` must be one of MTL, BOX, ALL
 
 ---
 

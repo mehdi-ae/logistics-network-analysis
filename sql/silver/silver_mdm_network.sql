@@ -14,7 +14,7 @@ casted AS (
     country, 
     SAFE_CAST(NULLIF(TRIM(latitude), '') AS NUMERIC) as latitude, 
     SAFE_CAST(NULLIF(TRIM(longitude), '') AS NUMERIC) as longitude,
-    UPPER(TRIM(delivery_node_capability)) AS delivery_node_capability
+    UPPER(TRIM(node_capability)) AS node_capability
   FROM `bronze_logistics.mdm_network`     
 ), 
 corrected AS (
@@ -34,7 +34,7 @@ corrected AS (
     NULLIF(TRIM(country), '') AS country,
     latitude, 
     longitude, 
-    delivery_node_capability
+    node_capability
   FROM casted
 ),
 flagged AS (
@@ -67,8 +67,8 @@ flagged AS (
       ELSE 'ok'
     END AS coordinates_quality_flag, 
     CASE 
-      WHEN delivery_node_capability IS NULL THEN 'null_in_source'
-      WHEN delivery_node_capability NOT IN ('BOX', 'MTL', 'ALL') THEN 'unexpected_capability'
+      WHEN node_capability IS NULL THEN 'null_in_source'
+      WHEN node_capability NOT IN ('BOX', 'MTL', 'ALL') THEN 'unexpected_capability'
       ELSE 'ok'
     END AS capabilities_quality_flag
   FROM corrected 
