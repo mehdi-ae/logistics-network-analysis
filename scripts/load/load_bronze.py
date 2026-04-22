@@ -65,10 +65,15 @@ TABLES = [
         "wms_shipment_details",
         "Shipment legs — one row per shipment per leg",
     ),
-        (
+    (
         "fin_procurement.csv",
         "fin_procurement",
         "Procurement items — one row per item",
+    ),
+    (
+        "mdm_configured_transit_times.csv",
+        "mdm_configured_transit_times",
+        "Configured transit times per lane — SLA benchmark for transit time governance",
     ),
 ]
 
