@@ -5,7 +5,7 @@ Generates mdm_configured_transit_times.csv — configured transit time per lane.
 
 Reads observed p50/p90/p95/p98 per (origin, destination) from BigQuery silver_tms_transportation, then assigns a configured transit time based on the following distribution (seed 42):
 
-    80% correct        — configured = p95 + uniform noise [0, 2] hours
+   80% correct — configured = uniform random between p90 and p95 (healthy zone — buffer above p90, below p95)
     15% under_configured — configured = uniform random between p50 and p90 (promising faster than network can reliably deliver)
     5% over_configured  — configured = p98 + uniform noise [3, 6] hours (unnecessarily conservative — missed cutoff opportunity)
 
@@ -20,7 +20,7 @@ import os
 import random
 from google.cloud import bigquery
 
-random.seed(42)
+random.seed(99)
 
 PROJECT_ID = "supply-chain-analytics-492110"
 
@@ -56,7 +56,7 @@ def compute_configured_time(row):
     p98  = float(row["p98"])
 
     if config_type == "correct":
-        configured = p95 + random.uniform(0, 2)
+        configured = random.uniform(p90, p95)
     elif config_type == "under_configured":
         configured = random.uniform(p50, p90)
     else:
