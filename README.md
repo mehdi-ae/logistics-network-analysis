@@ -94,6 +94,13 @@ Tracks container type compliance per origin, lane, and carrier. Surfaces origins
 ### ⏱️ Transit Time Governance
 Compares configured transit times against measured p95 actuals per lane and carrier. Surfaces lanes where operational reality has diverged from network configuration — protecting customer delivery promises and identifying underperforming carriers before they generate complaints.
 
+![Transit Time Governance](screenshots/transit_time_governance.png)
+
+**Key findings:**
+- 30 lanes have SLA benchmarks below p90 — delivery promises at risk
+- FastFreight EU and EuroHaul breach rate above network average
+- 8 lanes over-configured — cutoff optimisation opportunity
+
 ---
 
 ## ⚙️ Tech Stack
