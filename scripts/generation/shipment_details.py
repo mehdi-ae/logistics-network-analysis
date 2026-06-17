@@ -24,6 +24,12 @@ Container type rules (unified compliance model):
     Leg1 lanes    : origin tier  (40-80%, same origin same tier)
     Leg2 lanes    : hub tier     (85-95%)
 
+  Monthly compliance variation per origin (applied to ON_ origins only):
+    Improving  (30% of origins, ~5 sites): rate increases +15-20pp Jul->Dec
+    Deteriorating (20% of origins, ~3 sites): rate drops -10-15pp mid-period
+    Stable     (50% of origins, ~7 sites): ±3-5% random noise, no trend
+    Seed 42 ensures reproducible origin category assignments.
+
   Container ID format:
     Origin-created : {TYPE}_{truck_id}_{index:03d}
     Hub-created    : {TYPE}_{hub_id}_{date}_{sequence:05d}
@@ -56,6 +62,87 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 random.seed(42)
+
+# ── MONTHLY COMPLIANCE VARIATION ─────────────────────────────────────────────
+# Assigns every node (ON_ origins and CH_ hubs) a behaviour category that
+# modifies its compliance rate month over month.
+#
+# Uses a SEPARATE Random instance (seed 99) — fully independent of the main
+# random state consumed by build_network() with seed 42. This ensures the
+# behaviour assignments are deterministic and don't shift when build_network()
+# changes its internal random consumption.
+#
+# Categories:
+#   improving     (30%) — starts low, improves steadily Jul->Dec (+15-20pp)
+#   deteriorating (20%) — starts compliant, drops after August (-10-15pp)
+#   stable        (50%) — small deterministic noise per node+month (+-3pp)
+
+_behaviour_rng = random.Random(99)   # independent RNG, never touches global state
+
+
+def _build_node_behaviour(origins, hubs):
+    """
+    Assigns a behaviour category to every ON_ origin and CH_ hub.
+    Uses _behaviour_rng (seed 99) independent of build_network() state.
+    Returns dict: node_id -> category.
+    """
+    all_nodes = [o["node_id"] for o in origins] + [h["node_id"] for h in hubs]
+    shuffled  = all_nodes.copy()
+    _behaviour_rng.shuffle(shuffled)
+    n         = len(shuffled)
+    n_improve = round(n * 0.30)
+    n_deteri  = round(n * 0.20)
+
+    behaviour = {}
+    for i, node_id in enumerate(shuffled):
+        if i < n_improve:
+            behaviour[node_id] = "improving"
+        elif i < n_improve + n_deteri:
+            behaviour[node_id] = "deteriorating"
+        else:
+            behaviour[node_id] = "stable"
+
+    improving     = sum(1 for v in behaviour.values() if v == "improving")
+    deteriorating = sum(1 for v in behaviour.values() if v == "deteriorating")
+    stable        = sum(1 for v in behaviour.values() if v == "stable")
+    print(f"  Node behaviour assignments (seed 99, independent RNG):")
+    print(f"    Improving:     {improving}")
+    print(f"    Deteriorating: {deteriorating}")
+    print(f"    Stable:        {stable}")
+    return behaviour
+
+
+def monthly_rate_modifier(node_id, dep_month, base_rate, behaviour_map):
+    """
+    Returns the adjusted compliance rate for node_id in dep_month.
+
+    dep_month: integer 1-12 (July=7, December=12)
+    progress:  0=Jul, 1=Aug, 2=Sep, 3=Oct, 4=Nov, 5=Dec
+
+    Improving:     starts at (base - 0.15), ends at (base + 0.05)
+    Deteriorating: stable Jul-Aug, drops to (base - 0.15) by December
+    Stable:        deterministic +-3pp noise per node+month, no trend
+    """
+    category = behaviour_map.get(node_id, "stable")
+    progress = max(0, dep_month - 7)
+
+    if category == "improving":
+        delta = -0.15 + (0.20 * progress / 5)
+        rate  = base_rate + delta
+
+    elif category == "deteriorating":
+        if progress <= 1:
+            rate = base_rate + 0.05
+        else:
+            drop_progress = (progress - 1) / 4
+            rate = base_rate + 0.05 - (0.20 * drop_progress)
+
+    else:
+        noise = (hash(node_id + str(dep_month)) % 7 - 3) * 0.01
+        rate  = base_rate + noise
+
+    return max(0.10, min(0.99, rate))
+
 
 # ── PATH SETUP ───────────────────────────────────────────────────────────────
 
@@ -104,14 +191,26 @@ def correct_container_type(dest_id, capability_map):
     return "MTL" if cap in ("MTL", "ALL") else "BOX"
 
 
-def draw_container_type(dest_id, lane_key, capability_map, lane_container_rates):
+def draw_container_type(dest_id, lane_key, capability_map, lane_container_rates,
+                        dep_month=None, behaviour_map=None):
     """
     Draws container type for a single container on this lane.
     Uses lane correctness rate to decide correct vs wrong type.
+
+    When dep_month and behaviour_map are supplied, the base rate is adjusted
+    by monthly_rate_modifier() to simulate compliance trends over time.
+    Only affects ON_ origins — hub compliance stays stable.
     """
-    correct = correct_container_type(dest_id, capability_map)
-    wrong   = "BOX" if correct == "MTL" else "MTL"
-    rate    = lane_container_rates.get(lane_key, 0.75)
+    correct   = correct_container_type(dest_id, capability_map)
+    wrong     = "BOX" if correct == "MTL" else "MTL"
+    base_rate = lane_container_rates.get(lane_key, 0.75)
+
+    if dep_month is not None and behaviour_map is not None:
+        origin_id = lane_key[0]
+        rate = monthly_rate_modifier(lane_key[0], dep_month, base_rate, behaviour_map)
+    else:
+        rate = base_rate
+
     return correct if random.random() < rate else wrong
 
 
@@ -140,7 +239,8 @@ def build_hub_dn_map(transport_path):
 # ── PASS 1: LEG1 ─────────────────────────────────────────────────────────────
 
 def process_leg1(transport_path, hub_to_dns, capability_map,
-                 lane_container_rates, output_writer, pool_path, counter_start):
+                 lane_container_rates, output_writer, pool_path, counter_start,
+                 behaviour_map=None):
     counter   = counter_start
     pool      = defaultdict(list)
     row_count = 0
@@ -174,7 +274,8 @@ def process_leg1(transport_path, hub_to_dns, capability_map,
 
             for ctr_idx, count in distribution:
                 ctr_type     = draw_container_type(
-                    hub_id, lane_key, capability_map, lane_container_rates
+                    hub_id, lane_key, capability_map, lane_container_rates,
+                    dep_month=dep_date.month, behaviour_map=behaviour_map
                 )
                 container_id = make_origin_container_id(ctr_type, truck_id, ctr_idx)
 
@@ -205,7 +306,8 @@ def process_leg1(transport_path, hub_to_dns, capability_map,
 # ── PASS 2: LEG2 ─────────────────────────────────────────────────────────────
 
 def process_leg2(transport_path, pool_path, capability_map,
-                 lane_container_rates, output_writer, counter_start):
+                 lane_container_rates, output_writer, counter_start,
+                 behaviour_map=None):
     counter   = counter_start
     row_count = 0
 
@@ -242,7 +344,8 @@ def process_leg2(transport_path, pool_path, capability_map,
 
             for ctr_idx, count in distribution:
                 ctr_type = draw_container_type(
-                    dn_id, lane_key, capability_map, lane_container_rates
+                    dn_id, lane_key, capability_map, lane_container_rates,
+                    dep_month=dep_date.month, behaviour_map=behaviour_map
                 )
                 hub_seq_key  = (hub_id, date_str)
                 hub_sequence[hub_seq_key] += 1
@@ -274,7 +377,8 @@ def process_leg2(transport_path, pool_path, capability_map,
 # ── PASS 3: DIRECT ───────────────────────────────────────────────────────────
 
 def process_direct(transport_path, capability_map,
-                   lane_container_rates, output_writer, counter_start):
+                   lane_container_rates, output_writer, counter_start,
+                 behaviour_map=None):
     counter   = counter_start
     row_count = 0
 
@@ -302,7 +406,8 @@ def process_direct(transport_path, capability_map,
 
             for ctr_idx, count in distribution:
                 ctr_type     = draw_container_type(
-                    dest_id, lane_key, capability_map, lane_container_rates
+                    dest_id, lane_key, capability_map, lane_container_rates,
+                    dep_month=dep_date.month, behaviour_map=behaviour_map
                 )
                 container_id = make_origin_container_id(ctr_type, truck_id, ctr_idx)
 
@@ -413,6 +518,9 @@ def main():
     capability_map       = network["capability_map"]
     lane_container_rates = network["lane_container_rates"]
 
+    print("Building node behaviour map for monthly compliance variation...")
+    behaviour_map = _build_node_behaviour(network["origins"], network["hubs"])
+
     print("Building hub->DN map from leg2 trucks...")
     hub_to_dns = build_hub_dn_map(transport_path)
     print(f"  Hubs with active leg2 lanes: {len(hub_to_dns)}")
@@ -427,7 +535,8 @@ def main():
         print("Pass 1 — generating leg1 shipments...")
         counter, leg1_count = process_leg1(
             transport_path, hub_to_dns, capability_map,
-            lane_container_rates, writer, pool_path, counter
+            lane_container_rates, writer, pool_path, counter,
+            behaviour_map=behaviour_map
         )
         total_rows += leg1_count
         print(f"  Leg1 rows written: {leg1_count:,}")
@@ -435,7 +544,8 @@ def main():
         print("Pass 2 — generating leg2 shipments...")
         counter, leg2_count = process_leg2(
             transport_path, pool_path, capability_map,
-            lane_container_rates, writer, counter
+            lane_container_rates, writer, counter,
+            behaviour_map=behaviour_map
         )
         total_rows += leg2_count
         print(f"  Leg2 rows written: {leg2_count:,}")
@@ -443,7 +553,8 @@ def main():
         print("Pass 3 — generating direct shipments...")
         counter, direct_count = process_direct(
             transport_path, capability_map,
-            lane_container_rates, writer, counter
+            lane_container_rates, writer, counter,
+            behaviour_map=behaviour_map
         )
         total_rows += direct_count
         print(f"  Direct rows written: {direct_count:,}")
